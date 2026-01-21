@@ -28,7 +28,7 @@ class DummyAsyncClient:
         return DummyResponse(self._payload)
 
 
-def test_chat_returns_reply(monkeypatch) -> None:
+def test_chat_returns_reply(monkeypatch, state_db) -> None:
     api_module.settings.llm_api_key = "test-key"
     payload = {
         "candidates": [

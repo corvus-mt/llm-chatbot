@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -20,6 +21,10 @@ class Settings(BaseModel):
     llm_provider: str = "gemini"
     llm_api_key: str = os.getenv("GEMINI_API_KEY", "")
     llm_model: str = os.getenv("GEMINI_MODEL", "gemini-1.5-flash-latest")
+    state_db_path: str = os.getenv(
+        "CHAT_STATE_DB",
+        str(Path(__file__).resolve().parents[1] / "data" / "chat_state.db"),
+    )
 
 
 settings = Settings()
