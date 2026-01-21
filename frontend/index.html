@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Kid Chatbot</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="top-bar">
+        <div class="brand">
+          <p class="eyebrow">Gemini Playground</p>
+          <h1>Kid Chatbot</h1>
+        </div>
+        <div class="status">
+          <span class="dot" aria-hidden="true"></span>
+          <p id="status-text">Ready to chat.</p>
+        </div>
+        <button id="clear-button" type="button">Clear</button>
+      </header>
+
+      <main class="chat-area" aria-live="polite">
+        <div id="chat-list" class="chat-list"></div>
+        <div id="empty-state" class="empty-state">
+          Start the conversation and your chat history will appear here.
+        </div>
+      </main>
+
+      <form id="chat-form" class="composer">
+        <label class="field" for="message-input">Your message</label>
+        <div class="composer-row">
+          <textarea id="message-input" rows="2" placeholder="Say something..."></textarea>
+          <button id="send-button" type="submit">Send</button>
+        </div>
+      </form>
+    </div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
