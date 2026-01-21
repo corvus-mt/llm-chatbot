@@ -1,5 +1,3 @@
-$ErrorActionPreference = 'Stop'
-
 param(
   [Parameter(Mandatory = $true)]
   [string]$Title,
@@ -7,6 +5,8 @@ param(
   [string]$Branch = "",
   [string]$CommitMessage = ""
 )
+
+$ErrorActionPreference = 'Stop'
 
 function Resolve-GhPath {
   $cmd = Get-Command gh -ErrorAction SilentlyContinue
@@ -21,18 +21,18 @@ function Resolve-GhPath {
 }
 
 function Invoke-Git {
-  param([string[]]$Args)
-  & git @Args
+  param([string[]]$GitArgs)
+  & git @GitArgs
   if ($LASTEXITCODE -ne 0) {
-    throw "git $($Args -join ' ') failed."
+    throw "git $($GitArgs -join ' ') failed."
   }
 }
 
 function Invoke-Gh {
-  param([string[]]$Args)
-  & $script:gh @Args
+  param([string[]]$GhArgs)
+  & $script:gh @GhArgs
   if ($LASTEXITCODE -ne 0) {
-    throw "gh $($Args -join ' ') failed."
+    throw "gh $($GhArgs -join ' ') failed."
   }
 }
 
@@ -66,7 +66,11 @@ if (-not $Branch) {
   $Branch = "agent/$timestamp-$slug"
 }
 
-$branchExists = & git rev-parse --verify $Branch 2>$null
+if (-not $Branch) {
+  throw "Branch could not be determined."
+}
+
+& git show-ref --verify --quiet "refs/heads/$Branch"
 if ($LASTEXITCODE -eq 0) {
   Invoke-Git @("checkout", $Branch)
 } else {
