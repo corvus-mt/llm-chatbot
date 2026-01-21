@@ -1,10 +1,11 @@
 import json
 import logging
+import sqlite3
 from pathlib import Path
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.config import settings
@@ -14,13 +15,13 @@ logger = logging.getLogger(__name__)
 raw_logger = logging.getLogger("llm_raw")
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-SESSION_COOKIE_NAME = "kid_chat_session"
 ROOT_DIR = Path(__file__).resolve().parents[2]
 LOG_DIR = ROOT_DIR / "logs"
 RAW_LOG_PATH = LOG_DIR / "llm_raw.log"
 SYSTEM_PROMPT_TEXT = (ROOT_DIR / "SYSTEM_PROMPT.md").read_text(encoding="utf-8")
 SUMMARY_PROMPT_TEXT = (ROOT_DIR / "SUMMARY_PROMPT.md").read_text(encoding="utf-8")
-SESSION_STATE: dict[str, dict] = {}
+STATE_DB_PATH = Path(settings.state_db_path)
+STATE_SESSION_ID = "global"
 RECENT_TURNS = 2
 MAX_DIRECT_TURNS = RECENT_TURNS * 2
 SUMMARY_HEADER = "[CONVERSATION_SUMMARY]"
@@ -41,6 +42,69 @@ if not raw_logger.handlers:
     raw_logger.addHandler(handler)
     raw_logger.setLevel(logging.INFO)
     raw_logger.propagate = False
+
+
+def _ensure_state_db() -> None:
+    STATE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(STATE_DB_PATH) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                summary TEXT NOT NULL,
+                facts TEXT NOT NULL,
+                messages TEXT NOT NULL,
+                history TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO chat_state (id, summary, facts, messages, history)
+            SELECT 1, '', '', '[]', '[]'
+            WHERE NOT EXISTS (SELECT 1 FROM chat_state WHERE id = 1)
+            """
+        )
+
+
+def _load_state() -> dict:
+    _ensure_state_db()
+    with sqlite3.connect(STATE_DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT summary, facts, messages, history FROM chat_state WHERE id = 1"
+        ).fetchone()
+    if not row:
+        return {"summary": "", "facts": "", "messages": [], "history": []}
+    summary, facts, messages_raw, history_raw = row
+    messages = json.loads(messages_raw) if messages_raw else []
+    history = json.loads(history_raw) if history_raw else []
+    return {
+        "summary": summary or "",
+        "facts": facts or "",
+        "messages": messages,
+        "history": history,
+    }
+
+
+def _save_state(state: dict) -> None:
+    _ensure_state_db()
+    summary = state.get("summary", "")
+    facts = state.get("facts", "")
+    messages = json.dumps(state.get("messages", []), ensure_ascii=False)
+    history = json.dumps(state.get("history", []), ensure_ascii=False)
+    with sqlite3.connect(STATE_DB_PATH) as conn:
+        conn.execute(
+            """
+            UPDATE chat_state
+            SET summary = ?, facts = ?, messages = ?, history = ?
+            WHERE id = 1
+            """,
+            (summary, facts, messages, history),
+        )
+
+
+def _reset_state() -> None:
+    _save_state({"summary": "", "facts": "", "messages": [], "history": []})
 
 
 def _format_bullets(text: str) -> str:
@@ -194,63 +258,20 @@ def _prune_messages(messages: list[dict]) -> list[dict]:
     return messages[-MAX_DIRECT_TURNS:]
 
 
-def _ensure_session_state(session_id: str) -> dict:
-    if session_id not in SESSION_STATE:
-        SESSION_STATE[session_id] = {
-            "summary": "",
-            "facts": "",
-            "messages": [],
-            "history": [],
-        }
-    state = SESSION_STATE[session_id]
-    if "summary" not in state:
-        state["summary"] = ""
-    if "facts" not in state:
-        state["facts"] = ""
-    if "messages" not in state:
-        state["messages"] = []
-    if "history" not in state:
-        state["history"] = list(state.get("messages", []))
-    return state
-
-
-def _set_session_cookie(response: Response, session_id: str) -> None:
-    response.set_cookie(
-        key=SESSION_COOKIE_NAME,
-        value=session_id,
-        httponly=True,
-        samesite="lax",
-    )
-
-
-def _get_session(request: Request, response: Response) -> tuple[str, dict]:
-    session_id = request.cookies.get(SESSION_COOKIE_NAME)
-    if not session_id:
-        session_id = uuid4().hex
-    state = _ensure_session_state(session_id)
-    _set_session_cookie(response, session_id)
-    return session_id, state
-
-
 @router.get("/history", response_model=ChatHistoryResponse)
-def get_history(request: Request, response: Response) -> ChatHistoryResponse:
-    _, state = _get_session(request, response)
+def get_history() -> ChatHistoryResponse:
+    state = _load_state()
     history = state.get("history") or []
     return ChatHistoryResponse(messages=history)
 
 
 @router.post("/clear", response_model=ClearHistoryResponse)
-def clear_history(request: Request, response: Response) -> ClearHistoryResponse:
-    session_id, state = _get_session(request, response)
-    state["summary"] = ""
-    state["facts"] = ""
-    state["messages"] = []
-    state["history"] = []
-    SESSION_STATE[session_id] = state
+def clear_history() -> ClearHistoryResponse:
+    _reset_state()
     return ClearHistoryResponse(ok=True)
 
 
-async def _call_llm(prompt: str, session_id: str, purpose: str) -> str:
+async def _call_llm(prompt: str, purpose: str) -> str:
     url = GEMINI_URL.format(model=settings.llm_model)
     body = {
         "contents": [
@@ -265,7 +286,7 @@ async def _call_llm(prompt: str, session_id: str, purpose: str) -> str:
         "llm.request",
         {
             "request_id": request_id,
-            "session_id": session_id,
+            "session_id": STATE_SESSION_ID,
             "provider": settings.llm_provider,
             "model": settings.llm_model,
             "url": url,
@@ -314,7 +335,7 @@ async def _call_llm(prompt: str, session_id: str, purpose: str) -> str:
     return reply
 
 
-async def _update_summary_if_needed(state: dict, session_id: str) -> None:
+async def _update_summary_if_needed(state: dict) -> None:
     messages = state.get("messages", [])
     if len(messages) != MAX_DIRECT_TURNS:
         return
@@ -327,7 +348,7 @@ async def _update_summary_if_needed(state: dict, session_id: str) -> None:
         state.get("facts", ""),
         summarize_messages,
     )
-    reply_text = await _call_llm(prompt, session_id, "summary")
+    reply_text = await _call_llm(prompt, "summary")
     _, updated_summary, updated_facts = _extract_blocks(reply_text)
     if updated_summary:
         state["summary"] = updated_summary
@@ -339,20 +360,20 @@ async def _update_summary_if_needed(state: dict, session_id: str) -> None:
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(payload: ChatRequest, request: Request, response: Response) -> ChatResponse:
+async def chat(payload: ChatRequest) -> ChatResponse:
     if not settings.llm_api_key:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not set")
 
-    session_id, state = _get_session(request, response)
+    state = _load_state()
     memory_summary = state.get("summary", "")
     memory_facts = state.get("facts", "")
-    await _update_summary_if_needed(state, session_id)
+    await _update_summary_if_needed(state)
     memory_summary = state.get("summary", "")
     memory_facts = state.get("facts", "")
     recent_messages = _get_recent_messages(state.get("messages", []))
 
     prompt = _build_prompt(payload.message, memory_summary, memory_facts, recent_messages)
-    reply = await _call_llm(prompt, session_id, "chat")
+    reply = await _call_llm(prompt, "chat")
 
     user_reply, _, _ = _extract_blocks(reply)
     if not user_reply:
@@ -365,5 +386,6 @@ async def chat(payload: ChatRequest, request: Request, response: Response) -> Ch
     history_messages.extend([new_user_message, new_assistant_message])
     state["messages"] = _prune_messages(state_messages)
     state["history"] = history_messages
+    _save_state(state)
 
     return ChatResponse(reply=user_reply)

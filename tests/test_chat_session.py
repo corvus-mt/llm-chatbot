@@ -51,29 +51,32 @@ class DummySequenceAsyncClient:
         return DummyResponse(payload)
 
 
-def test_chat_parses_blocks_without_updating_summary(monkeypatch) -> None:
-    api_module.SESSION_STATE.clear()
-    session_id = "session-123"
-    api_module.SESSION_STATE[session_id] = {
-        "summary": "지난 대화 요약",
-        "facts": "사용자 이름은 민수다.",
-        "messages": [
-            {"role": "user", "content": "이전 질문"},
-            {"role": "assistant", "content": "이전 답변"},
-        ],
-    }
+def test_chat_parses_blocks_without_updating_summary(monkeypatch, state_db) -> None:
+    api_module._save_state(
+        {
+            "summary": "Previous summary",
+            "facts": "User name is Minsoo.",
+            "messages": [
+                {"role": "user", "content": "Previous question"},
+                {"role": "assistant", "content": "Previous answer"},
+            ],
+            "history": [
+                {"role": "user", "content": "Previous question"},
+                {"role": "assistant", "content": "Previous answer"},
+            ],
+        }
+    )
 
     reply_text = "\n".join(
         [
             "[ASSISTANT_REPLY]",
-            "- 안녕! 뭐가 궁금해?",
+            "- Hello! What can I help with?",
             "",
             "[UPDATED_SUMMARY]",
-            "- 아이가 인사를 했다.",
-            "- 간단한 안부를 나눴다.",
+            "- Summary refreshed.",
             "",
             "[UPDATED_FACTS]",
-            "- 사용자가 좋아하는 색은 파란색이다.",
+            "- Likes apples.",
         ]
     )
     payload = {
@@ -98,35 +101,35 @@ def test_chat_parses_blocks_without_updating_summary(monkeypatch) -> None:
     )
 
     client = TestClient(app)
-    client.cookies.set(api_module.SESSION_COOKIE_NAME, session_id)
-    response = client.post("/api/chat", json={"message": "오늘 뭐 해?"})
+    response = client.post("/api/chat", json={"message": "What should I do today?"})
 
     assert response.status_code == 200
-    assert response.json()["reply"] == "안녕! 뭐가 궁금해?"
-    assert api_module.SESSION_STATE[session_id]["summary"] == "지난 대화 요약"
-    assert api_module.SESSION_STATE[session_id]["facts"] == "사용자 이름은 민수다."
-    assert api_module.SESSION_COOKIE_NAME in response.cookies
+    assert response.json()["reply"] == "Hello! What can I help with?"
+    state = api_module._load_state()
+    assert state["summary"] == "Previous summary"
+    assert state["facts"] == "User name is Minsoo."
 
     sent_prompt = capture["json"]["contents"][0]["parts"][0]["text"]
     assert "[CONVERSATION_SUMMARY]" in sent_prompt
-    assert "지난 대화 요약" in sent_prompt
+    assert "Previous summary" in sent_prompt
     assert "[CONVERSATION_FACTS]" in sent_prompt
-    assert "사용자 이름은 민수다." in sent_prompt
+    assert "User name is Minsoo." in sent_prompt
     assert "[RECENT_CONVERSATION]" in sent_prompt
-    assert "User: 이전 질문" in sent_prompt
-    assert "Assistant: 이전 답변" in sent_prompt
+    assert "User: Previous question" in sent_prompt
+    assert "Assistant: Previous answer" in sent_prompt
     assert "[USER_MESSAGE]" in sent_prompt
-    assert "오늘 뭐 해?" in sent_prompt
+    assert "What should I do today?" in sent_prompt
 
 
-def test_chat_falls_back_when_blocks_missing(monkeypatch) -> None:
-    api_module.SESSION_STATE.clear()
-    session_id = "session-456"
-    api_module.SESSION_STATE[session_id] = {
-        "summary": "이전 요약",
-        "facts": "사용자는 서울에 산다.",
-        "messages": [],
-    }
+def test_chat_falls_back_when_blocks_missing(monkeypatch, state_db) -> None:
+    api_module._save_state(
+        {
+            "summary": "Earlier summary",
+            "facts": "User lives in Seoul.",
+            "messages": [],
+            "history": [],
+        }
+    )
 
     payload = {
         "candidates": [
@@ -134,7 +137,7 @@ def test_chat_falls_back_when_blocks_missing(monkeypatch) -> None:
                 "content": {
                     "parts": [
                         {
-                            "text": "그냥 응답",
+                            "text": "Plain reply",
                         }
                     ]
                 }
@@ -149,27 +152,28 @@ def test_chat_falls_back_when_blocks_missing(monkeypatch) -> None:
     )
 
     client = TestClient(app)
-    client.cookies.set(api_module.SESSION_COOKIE_NAME, session_id)
-    response = client.post("/api/chat", json={"message": "다시 말해줘"})
+    response = client.post("/api/chat", json={"message": "Say it again"})
 
     assert response.status_code == 200
-    assert response.json()["reply"] == "그냥 응답"
-    assert api_module.SESSION_STATE[session_id]["summary"] == "이전 요약"
-    assert api_module.SESSION_STATE[session_id]["facts"] == "사용자는 서울에 산다."
+    assert response.json()["reply"] == "Plain reply"
+    state = api_module._load_state()
+    assert state["summary"] == "Earlier summary"
+    assert state["facts"] == "User lives in Seoul."
 
 
-def test_chat_updates_summary_when_max_turns_reached(monkeypatch) -> None:
-    api_module.SESSION_STATE.clear()
-    session_id = "session-789"
+def test_chat_updates_summary_when_max_turns_reached(monkeypatch, state_db) -> None:
     messages = []
     for idx in range(api_module.MAX_DIRECT_TURNS):
         role = "user" if idx % 2 == 0 else "assistant"
         messages.append({"role": role, "content": f"m{idx}"})
-    api_module.SESSION_STATE[session_id] = {
-        "summary": "Summary.",
-        "facts": "Fact.",
-        "messages": messages,
-    }
+    api_module._save_state(
+        {
+            "summary": "Summary.",
+            "facts": "Fact.",
+            "messages": messages,
+            "history": list(messages),
+        }
+    )
 
     summary_text = "\n".join(
         [
@@ -196,7 +200,6 @@ def test_chat_updates_summary_when_max_turns_reached(monkeypatch) -> None:
     )
 
     client = TestClient(app)
-    client.cookies.set(api_module.SESSION_COOKIE_NAME, session_id)
     response = client.post("/api/chat", json={"message": "Latest message."})
 
     assert response.status_code == 200
@@ -210,7 +213,7 @@ def test_chat_updates_summary_when_max_turns_reached(monkeypatch) -> None:
     assert "[RECENT_CONVERSATION]" in summary_prompt
     assert "- User: m0" in summary_prompt
     assert "- Assistant: m3" not in summary_prompt
-    assert "요약을 업데이트하라." in summary_prompt
+    assert api_module.SUMMARY_UPDATE_MESSAGE in summary_prompt
 
     reply_prompt = capture[1]["json"]["contents"][0]["parts"][0]["text"]
     assert "[RECENT_CONVERSATION]" in reply_prompt
@@ -219,9 +222,10 @@ def test_chat_updates_summary_when_max_turns_reached(monkeypatch) -> None:
     assert "- User: m0" not in reply_prompt
     assert "- Assistant: m3" in reply_prompt
 
-    stored_messages = api_module.SESSION_STATE[session_id]["messages"]
+    state = api_module._load_state()
+    stored_messages = state["messages"]
     assert len(stored_messages) == (api_module.MAX_DIRECT_TURNS // 2) + 2
     assert stored_messages[-2]["content"] == "Latest message."
     assert stored_messages[-1]["content"] == "OK."
-    assert api_module.SESSION_STATE[session_id]["summary"] == "Summary updated."
-    assert api_module.SESSION_STATE[session_id]["facts"] == "Fact updated."
+    assert state["summary"] == "Summary updated."
+    assert state["facts"] == "Fact updated."
