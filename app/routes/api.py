@@ -127,6 +127,17 @@ def _build_context_message(
     return "\n\n".join(blocks).strip()
 
 
+def _build_system_instruction(
+    base_instruction: str,
+    memory_summary: str | None,
+    memory_facts: str | None,
+) -> str:
+    context_message = _build_context_message(memory_summary, memory_facts)
+    if not context_message:
+        return base_instruction
+    return "\n\n".join([base_instruction.rstrip(), context_message]).strip()
+
+
 def _build_user_message(user_message: str) -> str:
     user_block = _format_bullets(user_message)
     return f"{USER_HEADER}\n" + user_block
@@ -141,16 +152,8 @@ def _to_gemini_role(role: str | None) -> str:
 def _build_contents(
     recent_messages: list[dict],
     user_message: str,
-    context_message: str | None = None,
 ) -> list[dict]:
     contents = []
-    if context_message:
-        contents.append(
-            {
-                "role": "user",
-                "parts": [{"text": context_message}],
-            }
-        )
     for message in recent_messages:
         content = message.get("content", "")
         if not content:
@@ -342,17 +345,17 @@ async def _update_summary_if_needed(state: dict) -> None:
     summarize_messages = messages[:split_index]
     keep_messages = messages[split_index:MAX_DIRECT_TURNS]
 
-    context_message = _build_context_message(
-        state.get("summary", ""),
-        state.get("facts", ""),
-    )
     user_message = _build_user_message(SUMMARY_UPDATE_MESSAGE)
     contents = _build_contents(
         summarize_messages,
         user_message,
-        context_message=context_message,
     )
-    reply_text = await _call_llm(SUMMARY_PROMPT_TEXT, contents, "summary")
+    system_instruction = _build_system_instruction(
+        SUMMARY_PROMPT_TEXT,
+        state.get("summary", ""),
+        state.get("facts", ""),
+    )
+    reply_text = await _call_llm(system_instruction, contents, "summary")
     _, updated_summary, updated_facts = _extract_blocks(reply_text)
     if updated_summary:
         state["summary"] = updated_summary
@@ -376,14 +379,17 @@ async def chat(payload: ChatRequest) -> ChatResponse:
     memory_facts = state.get("facts", "")
     recent_messages = _get_recent_messages(state.get("messages", []))
 
-    context_message = _build_context_message(memory_summary, memory_facts)
     user_message = _build_user_message(payload.message)
     contents = _build_contents(
         recent_messages,
         user_message,
-        context_message=context_message,
     )
-    reply = await _call_llm(SYSTEM_PROMPT_TEXT, contents, "chat")
+    system_instruction = _build_system_instruction(
+        SYSTEM_PROMPT_TEXT,
+        memory_summary,
+        memory_facts,
+    )
+    reply = await _call_llm(system_instruction, contents, "chat")
 
     user_reply, _, _ = _extract_blocks(reply)
     if not user_reply:
