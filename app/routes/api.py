@@ -26,7 +26,6 @@ RECENT_TURNS = 2
 MAX_DIRECT_TURNS = RECENT_TURNS * 2
 SUMMARY_HEADER = "[CONVERSATION_SUMMARY]"
 FACTS_HEADER = "[CONVERSATION_FACTS]"
-USER_HEADER = "[USER_MESSAGE]"
 REPLY_HEADER = "[ASSISTANT_REPLY]"
 UPDATED_SUMMARY_HEADER = "[UPDATED_SUMMARY]"
 UPDATED_FACTS_HEADER = "[UPDATED_FACTS]"
@@ -139,8 +138,7 @@ def _build_system_instruction(
 
 
 def _build_user_message(user_message: str) -> str:
-    user_block = _format_bullets(user_message)
-    return f"{USER_HEADER}\n" + user_block
+    return user_message.strip()
 
 
 def _to_gemini_role(role: str | None) -> str:
@@ -185,6 +183,28 @@ def _normalize_block(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _strip_trailing_headers(text: str) -> str:
+    if not text:
+        return text
+    headers = [
+        SUMMARY_HEADER,
+        FACTS_HEADER,
+        REPLY_HEADER,
+        UPDATED_SUMMARY_HEADER,
+        UPDATED_FACTS_HEADER,
+    ]
+    earliest = None
+    for header in headers:
+        idx = text.find(header)
+        if idx == -1:
+            continue
+        if earliest is None or idx < earliest:
+            earliest = idx
+    if earliest is None:
+        return text
+    return text[:earliest].strip()
+
+
 def _extract_blocks(text: str) -> tuple[str, str, str]:
     headers = [REPLY_HEADER, UPDATED_SUMMARY_HEADER, UPDATED_FACTS_HEADER]
     positions = {header: text.find(header) for header in headers}
@@ -198,9 +218,13 @@ def _extract_blocks(text: str) -> tuple[str, str, str]:
         end = min(next_positions) if next_positions else len(text)
         return text[start:end].strip()
 
-    reply_block = _normalize_block(extract(REPLY_HEADER))
-    summary_block = _normalize_block(extract(UPDATED_SUMMARY_HEADER))
-    facts_block = _normalize_block(extract(UPDATED_FACTS_HEADER))
+    reply_block = _normalize_block(_strip_trailing_headers(extract(REPLY_HEADER)))
+    summary_block = _normalize_block(
+        _strip_trailing_headers(extract(UPDATED_SUMMARY_HEADER))
+    )
+    facts_block = _normalize_block(
+        _strip_trailing_headers(extract(UPDATED_FACTS_HEADER))
+    )
     return reply_block, summary_block, facts_block
 
 
