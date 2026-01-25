@@ -122,8 +122,7 @@ def test_chat_parses_blocks_without_updating_summary(monkeypatch, state_db) -> N
     assert capture["json"]["contents"][1]["parts"][0]["text"] == "Previous answer"
 
     last_text = capture["json"]["contents"][-1]["parts"][0]["text"]
-    assert "[USER_MESSAGE]" in last_text
-    assert "What should I do today?" in last_text
+    assert last_text == "What should I do today?"
 
 
 def test_chat_falls_back_when_blocks_missing(monkeypatch, state_db) -> None:
@@ -187,6 +186,12 @@ def test_chat_updates_summary_when_max_turns_reached(monkeypatch, state_db) -> N
             "",
             "[UPDATED_FACTS]",
             "- Fact updated.",
+            "",
+            "[CONVERSATION_SUMMARY]",
+            "- This should be ignored.",
+            "",
+            "[CONVERSATION_FACTS]",
+            "- Also ignored.",
         ]
     )
     reply_text = "\n".join(["[ASSISTANT_REPLY]", "- OK."])
@@ -216,12 +221,12 @@ def test_chat_updates_summary_when_max_turns_reached(monkeypatch, state_db) -> N
     assert "Summary." in summary_system
     assert "[CONVERSATION_FACTS]" in summary_system
     assert "Fact." in summary_system
-    assert api_module.SUMMARY_UPDATE_MESSAGE in capture[0]["json"]["contents"][-1]["parts"][0]["text"]
+    assert capture[0]["json"]["contents"][-1]["parts"][0]["text"] == api_module.SUMMARY_UPDATE_MESSAGE
 
     assert capture[0]["json"]["contents"][0]["role"] == "user"
     assert capture[0]["json"]["contents"][0]["parts"][0]["text"] == "m0"
     assert capture[0]["json"]["contents"][-1]["role"] == "user"
-    assert api_module.SUMMARY_UPDATE_MESSAGE in capture[0]["json"]["contents"][-1]["parts"][0]["text"]
+    assert capture[0]["json"]["contents"][-1]["parts"][0]["text"] == api_module.SUMMARY_UPDATE_MESSAGE
 
     reply_system = capture[1]["json"]["systemInstruction"]["parts"][0]["text"]
     assert api_module.SYSTEM_PROMPT_TEXT in reply_system
@@ -229,7 +234,7 @@ def test_chat_updates_summary_when_max_turns_reached(monkeypatch, state_db) -> N
     assert "Fact updated." in reply_system
     assert capture[1]["json"]["contents"][0]["parts"][0]["text"] == "m2"
     assert capture[1]["json"]["contents"][1]["parts"][0]["text"] == "m3"
-    assert "[USER_MESSAGE]" in capture[1]["json"]["contents"][-1]["parts"][0]["text"]
+    assert capture[1]["json"]["contents"][-1]["parts"][0]["text"] == "Latest message."
 
     state = api_module._load_state()
     stored_messages = state["messages"]
@@ -238,3 +243,5 @@ def test_chat_updates_summary_when_max_turns_reached(monkeypatch, state_db) -> N
     assert stored_messages[-1]["content"] == "OK."
     assert state["summary"] == "Summary updated."
     assert state["facts"] == "Fact updated."
+    assert reply_system.count("[CONVERSATION_SUMMARY]") == 1
+    assert reply_system.count("[CONVERSATION_FACTS]") == 1
