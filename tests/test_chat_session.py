@@ -221,17 +221,16 @@ def test_chat_updates_summary_when_max_turns_reached(monkeypatch, state_db) -> N
 
     assert capture[0]["json"]["contents"][1]["role"] == "user"
     assert capture[0]["json"]["contents"][1]["parts"][0]["text"] == "m0"
-    assert capture[0]["json"]["contents"][2]["role"] == "model"
-    assert capture[0]["json"]["contents"][2]["parts"][0]["text"] == "m1"
-    assert capture[0]["json"]["contents"][3]["role"] == "user"
-    assert capture[0]["json"]["contents"][3]["parts"][0]["text"] == "m2"
+    assert capture[0]["json"]["contents"][-1]["role"] == "user"
+    assert api_module.SUMMARY_UPDATE_MESSAGE in capture[0]["json"]["contents"][-1]["parts"][0]["text"]
 
     assert capture[1]["json"]["systemInstruction"]["parts"][0]["text"] == api_module.SYSTEM_PROMPT_TEXT
     reply_context = capture[1]["json"]["contents"][0]["parts"][0]["text"]
     assert "[CONVERSATION_FACTS]" in reply_context
     assert "Fact updated." in reply_context
-    assert capture[1]["json"]["contents"][1]["parts"][0]["text"] == "m8"
-    assert capture[1]["json"]["contents"][2]["parts"][0]["text"] == "m9"
+    assert capture[1]["json"]["contents"][1]["parts"][0]["text"] == "m2"
+    assert capture[1]["json"]["contents"][2]["parts"][0]["text"] == "m3"
+    assert "[USER_MESSAGE]" in capture[1]["json"]["contents"][-1]["parts"][0]["text"]
 
     state = api_module._load_state()
     stored_messages = state["messages"]
