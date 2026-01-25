@@ -109,16 +109,22 @@ def test_chat_parses_blocks_without_updating_summary(monkeypatch, state_db) -> N
     assert state["summary"] == "Previous summary"
     assert state["facts"] == "User name is Minsoo."
 
-    sent_prompt = capture["json"]["contents"][0]["parts"][0]["text"]
-    assert "[CONVERSATION_SUMMARY]" in sent_prompt
-    assert "Previous summary" in sent_prompt
-    assert "[CONVERSATION_FACTS]" in sent_prompt
-    assert "User name is Minsoo." in sent_prompt
-    assert "[RECENT_CONVERSATION]" in sent_prompt
-    assert "User: Previous question" in sent_prompt
-    assert "Assistant: Previous answer" in sent_prompt
-    assert "[USER_MESSAGE]" in sent_prompt
-    assert "What should I do today?" in sent_prompt
+    assert capture["json"]["systemInstruction"]["parts"][0]["text"] == api_module.SYSTEM_PROMPT_TEXT
+
+    context_text = capture["json"]["contents"][0]["parts"][0]["text"]
+    assert "[CONVERSATION_SUMMARY]" in context_text
+    assert "Previous summary" in context_text
+    assert "[CONVERSATION_FACTS]" in context_text
+    assert "User name is Minsoo." in context_text
+
+    assert capture["json"]["contents"][1]["role"] == "user"
+    assert capture["json"]["contents"][1]["parts"][0]["text"] == "Previous question"
+    assert capture["json"]["contents"][2]["role"] == "model"
+    assert capture["json"]["contents"][2]["parts"][0]["text"] == "Previous answer"
+
+    last_text = capture["json"]["contents"][-1]["parts"][0]["text"]
+    assert "[USER_MESSAGE]" in last_text
+    assert "What should I do today?" in last_text
 
 
 def test_chat_falls_back_when_blocks_missing(monkeypatch, state_db) -> None:
@@ -205,22 +211,26 @@ def test_chat_updates_summary_when_max_turns_reached(monkeypatch, state_db) -> N
     assert response.status_code == 200
     assert response.json()["reply"] == "OK."
 
-    summary_prompt = capture[0]["json"]["contents"][0]["parts"][0]["text"]
-    assert "[CONVERSATION_SUMMARY]" in summary_prompt
-    assert "Summary." in summary_prompt
-    assert "[CONVERSATION_FACTS]" in summary_prompt
-    assert "Fact." in summary_prompt
-    assert "[RECENT_CONVERSATION]" in summary_prompt
-    assert "- User: m0" in summary_prompt
-    assert "- Assistant: m3" not in summary_prompt
-    assert api_module.SUMMARY_UPDATE_MESSAGE in summary_prompt
+    assert capture[0]["json"]["systemInstruction"]["parts"][0]["text"] == api_module.SUMMARY_PROMPT_TEXT
+    summary_context = capture[0]["json"]["contents"][0]["parts"][0]["text"]
+    assert "[CONVERSATION_SUMMARY]" in summary_context
+    assert "Summary." in summary_context
+    assert "[CONVERSATION_FACTS]" in summary_context
+    assert "Fact." in summary_context
+    assert api_module.SUMMARY_UPDATE_MESSAGE in capture[0]["json"]["contents"][-1]["parts"][0]["text"]
 
-    reply_prompt = capture[1]["json"]["contents"][0]["parts"][0]["text"]
-    assert "[RECENT_CONVERSATION]" in reply_prompt
-    assert "[CONVERSATION_FACTS]" in reply_prompt
-    assert "Fact updated." in reply_prompt
-    assert "- User: m0" not in reply_prompt
-    assert "- Assistant: m3" in reply_prompt
+    assert capture[0]["json"]["contents"][1]["role"] == "user"
+    assert capture[0]["json"]["contents"][1]["parts"][0]["text"] == "m0"
+    assert capture[0]["json"]["contents"][-1]["role"] == "user"
+    assert api_module.SUMMARY_UPDATE_MESSAGE in capture[0]["json"]["contents"][-1]["parts"][0]["text"]
+
+    assert capture[1]["json"]["systemInstruction"]["parts"][0]["text"] == api_module.SYSTEM_PROMPT_TEXT
+    reply_context = capture[1]["json"]["contents"][0]["parts"][0]["text"]
+    assert "[CONVERSATION_FACTS]" in reply_context
+    assert "Fact updated." in reply_context
+    assert capture[1]["json"]["contents"][1]["parts"][0]["text"] == "m2"
+    assert capture[1]["json"]["contents"][2]["parts"][0]["text"] == "m3"
+    assert "[USER_MESSAGE]" in capture[1]["json"]["contents"][-1]["parts"][0]["text"]
 
     state = api_module._load_state()
     stored_messages = state["messages"]
