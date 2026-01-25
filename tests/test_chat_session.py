@@ -232,8 +232,9 @@ def test_chat_updates_summary_when_max_turns_reached(monkeypatch, state_db) -> N
     assert api_module.SYSTEM_PROMPT_TEXT in reply_system
     assert "[CONVERSATION_FACTS]" in reply_system
     assert "Fact updated." in reply_system
-    assert capture[1]["json"]["contents"][0]["parts"][0]["text"] == "m2"
-    assert capture[1]["json"]["contents"][1]["parts"][0]["text"] == "m3"
+    expected_start = api_module.MAX_DIRECT_TURNS // 2
+    assert capture[1]["json"]["contents"][0]["parts"][0]["text"] == f"m{expected_start}"
+    assert capture[1]["json"]["contents"][1]["parts"][0]["text"] == f"m{expected_start + 1}"
     assert capture[1]["json"]["contents"][-1]["parts"][0]["text"] == "Latest message."
 
     state = api_module._load_state()
