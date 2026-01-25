@@ -2,3 +2,4 @@
 __pycache__/
 *.pyc
 logs/llm_raw.log
+data/chat_state.db
