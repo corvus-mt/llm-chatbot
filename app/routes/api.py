@@ -22,11 +22,10 @@ SYSTEM_PROMPT_TEXT = (ROOT_DIR / "SYSTEM_PROMPT.md").read_text(encoding="utf-8")
 SUMMARY_PROMPT_TEXT = (ROOT_DIR / "SUMMARY_PROMPT.md").read_text(encoding="utf-8")
 STATE_DB_PATH = Path(settings.state_db_path)
 STATE_SESSION_ID = "global"
-RECENT_TURNS = 2
+RECENT_TURNS = 8
 MAX_DIRECT_TURNS = RECENT_TURNS * 2
 SUMMARY_HEADER = "[CONVERSATION_SUMMARY]"
 FACTS_HEADER = "[CONVERSATION_FACTS]"
-RECENT_HEADER = "[RECENT_CONVERSATION]"
 USER_HEADER = "[USER_MESSAGE]"
 REPLY_HEADER = "[ASSISTANT_REPLY]"
 UPDATED_SUMMARY_HEADER = "[UPDATED_SUMMARY]"
@@ -112,22 +111,9 @@ def _format_bullets(text: str) -> str:
     return "\n".join(f"- {line}" for line in lines)
 
 
-def _format_dialogue(messages: list[dict]) -> str:
-    lines = []
-    for message in messages:
-        role = message.get("role")
-        content = message.get("content", "")
-        label = "User" if role == "user" else "Assistant"
-        single_line = " ".join(content.split())
-        lines.append(f"- {label}: {single_line}")
-    return "\n".join(lines)
-
-
-def _build_prompt(
-    user_message: str,
+def _build_context_message(
     memory_summary: str | None,
     memory_facts: str | None,
-    recent_messages: list[dict],
 ) -> str:
     blocks = []
     if memory_summary:
@@ -138,38 +124,50 @@ def _build_prompt(
         facts_block = _format_bullets(memory_facts)
         if facts_block:
             blocks.append(f"{FACTS_HEADER}\n" + facts_block)
-    if recent_messages:
-        dialogue_block = _format_dialogue(recent_messages)
-        if dialogue_block:
-            blocks.append(f"{RECENT_HEADER}\n" + dialogue_block)
+    return "\n\n".join(blocks).strip()
+
+
+def _build_user_message(user_message: str) -> str:
     user_block = _format_bullets(user_message)
-    blocks.append(f"{USER_HEADER}\n" + user_block)
-    input_section = "\n\n".join(blocks)
-    return f"{SYSTEM_PROMPT_TEXT}\n\n{input_section}".strip()
+    return f"{USER_HEADER}\n" + user_block
 
 
-def _build_summary_prompt(
-    memory_summary: str | None,
-    memory_facts: str | None,
+def _to_gemini_role(role: str | None) -> str:
+    if role == "assistant" or role == "model":
+        return "model"
+    return "user"
+
+
+def _build_contents(
     recent_messages: list[dict],
-) -> str:
-    blocks = []
-    if memory_summary:
-        summary_block = _format_bullets(memory_summary)
-        if summary_block:
-            blocks.append(f"{SUMMARY_HEADER}\n" + summary_block)
-    if memory_facts:
-        facts_block = _format_bullets(memory_facts)
-        if facts_block:
-            blocks.append(f"{FACTS_HEADER}\n" + facts_block)
-    if recent_messages:
-        dialogue_block = _format_dialogue(recent_messages)
-        if dialogue_block:
-            blocks.append(f"{RECENT_HEADER}\n" + dialogue_block)
-    instruction_block = _format_bullets(SUMMARY_UPDATE_MESSAGE)
-    blocks.append(f"{USER_HEADER}\n" + instruction_block)
-    input_section = "\n\n".join(blocks)
-    return f"{SUMMARY_PROMPT_TEXT}\n\n{input_section}".strip()
+    user_message: str,
+    context_message: str | None = None,
+) -> list[dict]:
+    contents = []
+    if context_message:
+        contents.append(
+            {
+                "role": "user",
+                "parts": [{"text": context_message}],
+            }
+        )
+    for message in recent_messages:
+        content = message.get("content", "")
+        if not content:
+            continue
+        contents.append(
+            {
+                "role": _to_gemini_role(message.get("role")),
+                "parts": [{"text": content}],
+            }
+        )
+    contents.append(
+        {
+            "role": "user",
+            "parts": [{"text": user_message}],
+        }
+    )
+    return contents
 
 
 def _normalize_block(text: str) -> str:
@@ -271,16 +269,17 @@ def clear_history() -> ClearHistoryResponse:
     return ClearHistoryResponse(ok=True)
 
 
-async def _call_llm(prompt: str, purpose: str) -> str:
+async def _call_llm(
+    system_instruction: str | None,
+    contents: list[dict],
+    purpose: str,
+) -> str:
     url = GEMINI_URL.format(model=settings.llm_model)
-    body = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [{"text": prompt}],
-            }
-        ]
-    }
+    body = {"contents": contents}
+    if system_instruction:
+        body["systemInstruction"] = {
+            "parts": [{"text": system_instruction}],
+        }
     request_id = uuid4().hex
     _log_raw(
         "llm.request",
@@ -343,12 +342,17 @@ async def _update_summary_if_needed(state: dict) -> None:
     summarize_messages = messages[:split_index]
     keep_messages = messages[split_index:MAX_DIRECT_TURNS]
 
-    prompt = _build_summary_prompt(
+    context_message = _build_context_message(
         state.get("summary", ""),
         state.get("facts", ""),
-        summarize_messages,
     )
-    reply_text = await _call_llm(prompt, "summary")
+    user_message = _build_user_message(SUMMARY_UPDATE_MESSAGE)
+    contents = _build_contents(
+        summarize_messages,
+        user_message,
+        context_message=context_message,
+    )
+    reply_text = await _call_llm(SUMMARY_PROMPT_TEXT, contents, "summary")
     _, updated_summary, updated_facts = _extract_blocks(reply_text)
     if updated_summary:
         state["summary"] = updated_summary
@@ -372,8 +376,14 @@ async def chat(payload: ChatRequest) -> ChatResponse:
     memory_facts = state.get("facts", "")
     recent_messages = _get_recent_messages(state.get("messages", []))
 
-    prompt = _build_prompt(payload.message, memory_summary, memory_facts, recent_messages)
-    reply = await _call_llm(prompt, "chat")
+    context_message = _build_context_message(memory_summary, memory_facts)
+    user_message = _build_user_message(payload.message)
+    contents = _build_contents(
+        recent_messages,
+        user_message,
+        context_message=context_message,
+    )
+    reply = await _call_llm(SYSTEM_PROMPT_TEXT, contents, "chat")
 
     user_reply, _, _ = _extract_blocks(reply)
     if not user_reply:
